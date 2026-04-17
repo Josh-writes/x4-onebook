@@ -17,9 +17,20 @@ router.get('/status', async (req, res) => {
   const onDevice      = queries.getOnDeviceBook();
   const wifiReachable = deviceIp ? await deviceSvc.pingDevice(deviceIp) : false;
 
+  const usbAvailable = deviceSvc.isUsbAvailable();
+  let usbPort = null;
+  if (usbAvailable) {
+    const ports = await deviceSvc.listPorts();
+    const x4 = ports.find(p =>
+      p.vendorId?.toLowerCase() === '303a' ||
+      p.manufacturer?.toLowerCase().includes('espressif')
+    );
+    if (x4) usbPort = x4.path;
+  }
+
   res.json({
     wifi:     { configured: !!deviceIp, ip: deviceIp, reachable: wifiReachable },
-    usb:      { available: deviceSvc.isUsbAvailable() },
+    usb:      { available: usbAvailable, connected: !!usbPort, port: usbPort },
     onDevice: onDevice ? { id: onDevice.id, title: onDevice.title } : null,
   });
 });

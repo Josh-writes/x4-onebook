@@ -95,7 +95,7 @@ async function waitForPrefix(reader, prefix, timeoutMs) {
       if (line.startsWith(prefix)) return line;
       // log lines from device — ignore silently
     } catch {
-      break;
+      continue; // individual read timed out — keep waiting until deadline
     }
   }
   return null;
@@ -129,7 +129,7 @@ async function runSync(portPath, emit) {
     await writeAndDrain(port, 'X4SYNC\n');
 
     // Device serial also carries log output — skip lines until we see X4READY
-    const ready = await waitForPrefix(reader, 'X4READY:', 5000);
+    const ready = await waitForPrefix(reader, 'X4READY:', 15000);
     if (!ready) {
       console.warn('[usb-sync] No X4READY response');
       return false;

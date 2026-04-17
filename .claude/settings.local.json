@@ -37,7 +37,8 @@
       "Bash(echo \"PID: $!\" sleep 6 cat /tmp/devout.txt netstat -ano)",
       "Bash(xargs -I{} taskkill //F //PID {})",
       "Bash(netsh wlan *)",
-      "Bash(pio run *)"
+      "Bash(pio run *)",
+      "Bash(taskkill *)"
     ]
   }
 }

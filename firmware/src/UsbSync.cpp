@@ -64,9 +64,8 @@ bool receiveFile(const String& filename, uint32_t fileSize) {
 }
 
 bool runSync(GfxRenderer& renderer) {
-  PageRenderer::renderMessage(renderer, "USB sync...", "Do not disconnect.");
-
-  // Send current state
+  // Send X4READY immediately — before any blocking display operations so
+  // the shelf receives the handshake before its timeout fires.
   BookState state = StateManager::load();
   JsonDocument doc;
   if (state.bookId.length() > 0) {
@@ -83,6 +82,9 @@ bool runSync(GfxRenderer& renderer) {
   Serial.print("X4READY:");
   Serial.println(stateJson);
 
+  // Now do the slow e-ink render
+  PageRenderer::renderMessage(renderer, "USB sync...", "Do not disconnect.");
+
   // Set generous timeout for file data
   Serial.setTimeout(60000);
 
@@ -92,6 +94,13 @@ bool runSync(GfxRenderer& renderer) {
       LOG_ERR("USB", "Command timeout");
       Serial.println("X4ERR:timeout");
       return false;
+    }
+
+    // Shelf reconnected mid-sync — re-announce and restart
+    if (cmd == "X4SYNC") {
+      Serial.print("X4READY:");
+      Serial.println(stateJson);
+      continue;
     }
 
     if (cmd.startsWith("X4FILE:")) {
