@@ -64,6 +64,12 @@ export default function FlashModal({ onClose }) {
                   {isWebSerialSupported() ? 'Web Serial (Chrome/Edge)' : 'Web Serial not supported — use Chrome or Edge'}
                 </span>
               </div>
+
+              {!status.compiled && (
+                <div className="mt-2 rounded border border-shelf-border bg-shelf-bg p-2 text-xs text-shelf-muted">
+                  Build firmware first: <span className="font-mono">cd firmware && pio run</span>
+                </div>
+              )}
             </div>
           )}
 
