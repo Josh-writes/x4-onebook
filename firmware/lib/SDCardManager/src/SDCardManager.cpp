@@ -1,0 +1,149 @@
+#include "SDCardManager.h"
+
+namespace {
+constexpr uint8_t  SD_CS   = 12;
+constexpr uint32_t SPI_FQ  = 40000000;
+}
+
+SDCardManager SDCardManager::instance;
+
+SDCardManager::SDCardManager() : sd() {}
+
+bool SDCardManager::begin() {
+  if (!sd.begin(SD_CS, SPI_FQ)) {
+    if (Serial) Serial.printf("[%lu] [SD] SD card not detected\n", millis());
+    initialized = false;
+  } else {
+    if (Serial) Serial.printf("[%lu] [SD] SD card detected\n", millis());
+    initialized = true;
+  }
+  return initialized;
+}
+
+bool SDCardManager::ready() const { return initialized; }
+
+std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles) {
+  std::vector<String> ret;
+  if (!initialized) return ret;
+  auto root = sd.open(path);
+  if (!root || !root.isDirectory()) { root.close(); return ret; }
+  int count = 0;
+  char name[128];
+  for (auto f = root.openNextFile(); f && count < maxFiles; f = root.openNextFile()) {
+    if (f.isDirectory()) { f.close(); continue; }
+    f.getName(name, sizeof(name));
+    ret.emplace_back(name);
+    f.close();
+    count++;
+  }
+  root.close();
+  return ret;
+}
+
+String SDCardManager::readFile(const char* path) {
+  if (!initialized) return {""};
+  FsFile f;
+  if (!openFileForRead("SD", path, f)) return {""};
+  String content = "";
+  constexpr size_t maxSize = 50000;
+  size_t readSize = 0;
+  while (f.available() && readSize < maxSize) { content += (char)f.read(); readSize++; }
+  f.close();
+  return content;
+}
+
+bool SDCardManager::readFileToStream(const char* path, Print& out, const size_t chunkSize) {
+  if (!initialized) return false;
+  FsFile f;
+  if (!openFileForRead("SD", path, f)) return false;
+  constexpr size_t localBufSize = 256;
+  uint8_t buf[localBufSize];
+  const size_t toRead = (chunkSize == 0) ? localBufSize : (chunkSize < localBufSize ? chunkSize : localBufSize);
+  while (f.available()) {
+    const int r = f.read(buf, toRead);
+    if (r > 0) out.write(buf, (size_t)r); else break;
+  }
+  f.close();
+  return true;
+}
+
+size_t SDCardManager::readFileToBuffer(const char* path, char* buffer, const size_t bufferSize, const size_t maxBytes) {
+  if (!buffer || bufferSize == 0) return 0;
+  if (!initialized) { buffer[0] = '\0'; return 0; }
+  FsFile f;
+  if (!openFileForRead("SD", path, f)) { buffer[0] = '\0'; return 0; }
+  const size_t maxToRead = (maxBytes == 0) ? (bufferSize - 1) : min(maxBytes, bufferSize - 1);
+  size_t total = 0;
+  while (f.available() && total < maxToRead) {
+    constexpr size_t chunk = 64;
+    const size_t want = maxToRead - total;
+    const size_t readLen = (want < chunk) ? want : chunk;
+    const int r = f.read(buffer + total, readLen);
+    if (r > 0) total += (size_t)r; else break;
+  }
+  buffer[total] = '\0';
+  f.close();
+  return total;
+}
+
+bool SDCardManager::writeFile(const char* path, const String& content) {
+  if (!initialized) return false;
+  if (sd.exists(path)) sd.remove(path);
+  FsFile f;
+  if (!openFileForWrite("SD", path, f)) return false;
+  const size_t written = f.print(content);
+  f.close();
+  return written == content.length();
+}
+
+bool SDCardManager::ensureDirectoryExists(const char* path) {
+  if (!initialized) return false;
+  if (sd.exists(path)) {
+    FsFile dir = sd.open(path);
+    const bool isDir = dir && dir.isDirectory();
+    dir.close();
+    if (isDir) return true;
+  }
+  return sd.mkdir(path);
+}
+
+bool SDCardManager::openFileForRead(const char* moduleName, const char* path, FsFile& file) {
+  if (!sd.exists(path)) {
+    if (Serial) Serial.printf("[%lu] [%s] File does not exist: %s\n", millis(), moduleName, path);
+    return false;
+  }
+  file = sd.open(path, O_RDONLY);
+  if (!file) {
+    if (Serial) Serial.printf("[%lu] [%s] Failed to open for reading: %s\n", millis(), moduleName, path);
+    return false;
+  }
+  return true;
+}
+bool SDCardManager::openFileForRead(const char* m, const std::string& p, FsFile& f) { return openFileForRead(m, p.c_str(), f); }
+bool SDCardManager::openFileForRead(const char* m, const String& p,      FsFile& f) { return openFileForRead(m, p.c_str(), f); }
+
+bool SDCardManager::openFileForWrite(const char* moduleName, const char* path, FsFile& file) {
+  file = sd.open(path, O_RDWR | O_CREAT | O_TRUNC);
+  if (!file) {
+    if (Serial) Serial.printf("[%lu] [%s] Failed to open for writing: %s\n", millis(), moduleName, path);
+    return false;
+  }
+  return true;
+}
+bool SDCardManager::openFileForWrite(const char* m, const std::string& p, FsFile& f) { return openFileForWrite(m, p.c_str(), f); }
+bool SDCardManager::openFileForWrite(const char* m, const String& p,      FsFile& f) { return openFileForWrite(m, p.c_str(), f); }
+
+bool SDCardManager::removeDir(const char* path) {
+  auto dir = sd.open(path);
+  if (!dir || !dir.isDirectory()) return false;
+  char name[128];
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    String filePath = path;
+    if (!filePath.endsWith("/")) filePath += "/";
+    file.getName(name, sizeof(name));
+    filePath += name;
+    if (file.isDirectory()) { if (!removeDir(filePath.c_str())) return false; }
+    else { if (!sd.remove(filePath.c_str())) return false; }
+  }
+  return sd.rmdir(path);
+}

@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep *)",
+      "Bash(xargs cat *)",
+      "Bash(grep -v \"//\")",
+      "Bash(npm install *)",
+      "Bash(node *)",
+      "Bash(npx vite *)",
+      "Bash(curl -s http://localhost:3001/api/books)",
+      "Bash(npm rebuild *)",
+      "Bash(npx --yes node-gyp rebuild --directory node_modules/better-sqlite3)",
+      "Bash(curl -s -X POST http://localhost:3001/api/books -F \"epub=@/dev/null;type=application/epub+zip\")",
+      "Bash(netstat -ano)",
+      "Bash(awk '{print $5}')",
+      "Bash(xargs -r taskkill //PID //F)",
+      "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(curl -s http://localhost:3001/api/settings)",
+      "Bash(kill %1)",
+      "Bash(gh api *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cp -r \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/crosspoint-reader/lib/EpdFont\" \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/firmware/lib/\")",
+      "Bash(cp -r \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/crosspoint-reader/lib/GfxRenderer\" \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/firmware/lib/\")",
+      "Bash(cp -r \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/crosspoint-reader/lib/hal\" \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/firmware/lib/\")",
+      "Bash(cp -r \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/crosspoint-reader/lib/Logging\" \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/firmware/lib/\")",
+      "Bash(cp -r \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/crosspoint-reader/lib/FsHelpers\" \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook/firmware/lib/\")",
+      "Bash(npm --version)",
+      "Bash(\"../../.bin/prebuild-install.cmd\")",
+      "Bash(npm show *)",
+      "Bash(curl -s \"http://localhost:3001/api/books\")",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(taskkill //F //PID 16772)",
+      "Bash(taskkill //F //PID 11084)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(echo \"PID: $!\" sleep 6 cat /tmp/devout.txt netstat -ano)",
+      "Bash(xargs -I{} taskkill //F //PID {})",
+      "Bash(netsh wlan *)",
+      "Bash(pio run *)"
+    ]
+  }
+}
