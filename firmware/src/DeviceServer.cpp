@@ -42,6 +42,47 @@ bool startAP() {
   return true;
 }
 
+bool connectToConfiguredWifi() {
+  if (config.wifiNetworks.empty()) {
+    LOG_WRN("SRV", "No configured WiFi networks; falling back to AP");
+    return false;
+  }
+
+  std::vector<WifiNetwork> networks = config.wifiNetworks;
+  std::sort(networks.begin(), networks.end(),
+            [](const WifiNetwork& a, const WifiNetwork& b) {
+              return a.priority < b.priority;
+            });
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true, true);
+  delay(100);
+
+  for (const auto& net : networks) {
+    if (net.ssid.length() == 0) continue;
+    LOG_INF("SRV", "Connecting to WiFi SSID: %s", net.ssid.c_str());
+
+    WiFi.begin(net.ssid.c_str(), net.password.c_str());
+
+    const unsigned long start = millis();
+    while (millis() - start < 8000) {
+      if (WiFi.status() == WL_CONNECTED) {
+        LOG_INF("SRV", "WiFi connected — SSID: %s  IP: %s",
+                net.ssid.c_str(), WiFi.localIP().toString().c_str());
+        return true;
+      }
+      delay(200);
+    }
+
+    LOG_WRN("SRV", "WiFi connect timeout for SSID: %s", net.ssid.c_str());
+    WiFi.disconnect(true, true);
+    delay(100);
+  }
+
+  LOG_WRN("SRV", "All configured WiFi networks failed; falling back to AP");
+  return false;
+}
+
 void handlePing() {
   JsonDocument doc;
   doc["ok"] = true;
@@ -167,7 +208,8 @@ namespace DeviceServer {
 void begin(SyncCompleteCallback onSyncComplete) {
   onSyncCompleteCb = onSyncComplete;
 
-  if (!startAP()) return;
+  const bool staOk = connectToConfiguredWifi();
+  if (!staOk && !startAP()) return;
 
   server = new WebServer(80);
 
