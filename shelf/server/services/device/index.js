@@ -51,6 +51,55 @@ function isUsbAvailable() {
   return !!SerialPort;
 }
 
+function openPort(portPath, baudRate = 115200) {
+  return new Promise((resolve, reject) => {
+    const port = new SerialPort({ path: portPath, baudRate }, err => {
+      if (err) reject(err);
+      else resolve(port);
+    });
+  });
+}
+
+function closePort(port) {
+  return new Promise(resolve => {
+    if (!port || !port.isOpen) return resolve();
+    port.close(() => resolve());
+  });
+}
+
+function writeAndDrain(port, data) {
+  return new Promise((resolve, reject) => {
+    port.write(data, err => {
+      if (err) return reject(err);
+      port.drain(err2 => err2 ? reject(err2) : resolve());
+    });
+  });
+}
+
+function readLine(port, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const onData = chunk => {
+      buf += chunk.toString('utf8');
+      const idx = buf.indexOf('\n');
+      if (idx < 0) return;
+      cleanup();
+      const line = buf.slice(0, idx).replace(/\r$/, '').trim();
+      resolve(line);
+    };
+    const onTimeout = () => {
+      cleanup();
+      reject(new Error(`USB read timeout after ${timeoutMs}ms`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      port.off('data', onData);
+    };
+    const timer = setTimeout(onTimeout, timeoutMs);
+    port.on('data', onData);
+  });
+}
+
 /**
  * List available serial ports (for settings UI).
  */
@@ -58,6 +107,47 @@ async function listPorts() {
   if (!SerialPort) return [];
   const { SerialPort: SP } = require('serialport');
   return SP.list();
+}
+
+async function configureWifiOverUsb(portPath, { wifiNetworks, shelfIp, shelfPort = 3001 }) {
+  if (!SerialPort) throw new Error('USB serial support is unavailable (serialport module missing)');
+  if (!portPath) throw new Error('No serial port selected');
+  if (!Array.isArray(wifiNetworks) || wifiNetworks.length === 0) {
+    throw new Error('No WiFi networks selected');
+  }
+
+  const payload = {
+    wifiNetworks: wifiNetworks.map(n => ({
+      ssid: String(n.ssid || ''),
+      password: String(n.password || ''),
+      priority: Number(n.priority || 0),
+    })),
+    shelfIp: shelfIp || '',
+    shelfPort: Number(shelfPort) || 3001,
+  };
+
+  const port = await openPort(portPath, 115200);
+  try {
+    await new Promise(r => setTimeout(r, 600));
+
+    const line = `X4SETUP:${JSON.stringify(payload)}\n`;
+    const deadline = Date.now() + 15000;
+
+    while (Date.now() < deadline) {
+      await writeAndDrain(port, line);
+      try {
+        const rsp = await readLine(port, 1200);
+        if (rsp === 'X4SETUP:OK') return { ok: true };
+        if (rsp === 'X4SETUP:ERR') return { ok: false, error: 'Device rejected WiFi configuration' };
+      } catch {
+        // keep retrying until deadline
+      }
+    }
+
+    return { ok: false, error: 'No response from device while configuring WiFi over USB' };
+  } finally {
+    await closePort(port);
+  }
 }
 
 // ── File set assembly ─────────────────────────────────────────────────────────
@@ -245,6 +335,7 @@ module.exports = {
   pingDevice,
   isUsbAvailable,
   listPorts,
+  configureWifiOverUsb,
   buildFileSet,
   writeStateJson,
   charOffsetToPage,
