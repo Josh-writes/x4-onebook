@@ -126,5 +126,39 @@ router.get('/local-ips', (_req, res) => {
   res.json(flashSvc.getAllLocalIps());
 });
 
+// ── GET /api/device/wifi-scan ────────────────────────────────────────────────
+// Placeholder for future host-side scan support; returns empty list today.
+router.get('/wifi-scan', (_req, res) => {
+  res.json({ networks: [] });
+});
+
+// ── POST /api/device/configure-wifi ──────────────────────────────────────────
+// Pushes selected WiFi credentials to the device over USB serial.
+router.post('/configure-wifi', async (req, res) => {
+  const { port, networkIds, shelfIp, shelfPort } = req.body || {};
+  if (!port) return res.status(400).json({ error: 'port is required' });
+  if (!Array.isArray(networkIds) || networkIds.length === 0) {
+    return res.status(400).json({ error: 'networkIds array is required' });
+  }
+
+  const wifiNetworks = networkIds
+    .map(id => queries.getWifiNetwork(id))
+    .filter(Boolean);
+
+  if (wifiNetworks.length === 0) {
+    return res.status(400).json({ error: 'No valid WiFi networks found for selected IDs' });
+  }
+
+  try {
+    const result = await deviceSvc.configureWifiOverUsb(port, { wifiNetworks, shelfIp, shelfPort });
+    if (!result.ok) {
+      return res.status(500).json({ ok: false, error: result.error || 'WiFi configuration failed' });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 
 module.exports = router;
