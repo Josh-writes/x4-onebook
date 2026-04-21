@@ -203,11 +203,9 @@ void setup() {
   gpio.begin();
   powerManager.begin();
 
-  if (gpio.isUsbConnected()) {
-    Serial.begin(115200);
-    const unsigned long t = millis();
-    while (!Serial && millis() - t < 500) delay(10);
-  }
+  Serial.begin(115200);
+  const unsigned long t = millis();
+  while (!Serial && millis() - t < 500) delay(10);
 
   if (!Storage.begin()) {
     display.begin();
