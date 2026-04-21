@@ -95,7 +95,7 @@ async function waitForPrefix(reader, prefix, timeoutMs) {
       if (line.startsWith(prefix)) return line;
       // log lines from device — ignore silently
     } catch {
-      break;
+      continue; // individual read timed out — keep waiting until deadline
     }
   }
   return null;
@@ -107,10 +107,23 @@ async function findX4Port() {
   if (!SerialPort) return null;
   try {
     const ports = await SerialPort.list();
-    return ports.find(p =>
+    const match = ports.find(p =>
       p.vendorId?.toLowerCase() === '303a' ||
       p.manufacturer?.toLowerCase()?.includes('espressif')
-    ) || null;
+    );
+    if (match) return match;
+
+    // Fallback for environments where VID/manufacturer aren't exposed by the
+    // serial backend (common on some Linux/macOS setups).
+    return ports.find(p => {
+      const path = (p.path || '').toLowerCase();
+      return (
+        path.includes('ttyacm') ||
+        path.includes('ttyusb') ||
+        path.includes('usbmodem') ||
+        path.startsWith('com')
+      );
+    }) || null;
   } catch {
     return null;
   }
@@ -123,15 +136,22 @@ async function runSync(portPath, emit) {
   const reader = new LineReader(port);
 
   try {
-    // Small delay after open to let device serial stabilise
-    await new Promise(r => setTimeout(r, 300));
+    // Give USB CDC time to settle. Some X4 boards reset on open (DTR toggle),
+    // so we retry handshake while boot logs are still printing.
+    await new Promise(r => setTimeout(r, 600));
 
-    await writeAndDrain(port, 'X4SYNC\n');
-
-    // Device serial also carries log output — skip lines until we see X4READY
-    const ready = await waitForPrefix(reader, 'X4READY:', 5000);
+    // Device serial also carries boot/log output — keep sending X4SYNC until
+    // we receive X4READY (or timeout). This avoids missing the command during
+    // early boot when the board just reset on port-open.
+    const readyDeadline = Date.now() + 20000;
+    let ready = null;
+    while (!ready && Date.now() < readyDeadline) {
+      await writeAndDrain(port, 'X4SYNC\n');
+      ready = await waitForPrefix(reader, 'X4READY:', 1200);
+    }
     if (!ready) {
       console.warn('[usb-sync] No X4READY response');
+      emit('sync:error', { error: 'Device did not respond to USB handshake', transport: 'usb' });
       return false;
     }
 

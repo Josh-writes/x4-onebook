@@ -29,14 +29,15 @@ function emit(event, data) {
   }
 }
 
-const DEVICE_IP          = '192.168.4.1';  // ESP32 AP default
+const DEVICE_DEFAULT_IP  = '192.168.4.1';  // ESP32 AP default
+const DEVICE_MDNS_HOST   = 'x4book.local';
 const POLL_INTERVAL_MS   = 2000;
 const REQUEST_TIMEOUT_MS = 10000;
 
-function httpRequest(method, urlPath, timeoutMs = REQUEST_TIMEOUT_MS) {
+function httpRequest(method, urlPath, timeoutMs = REQUEST_TIMEOUT_MS, host = DEVICE_DEFAULT_IP) {
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: DEVICE_IP,
+      hostname: host,
       port: 80,
       path: urlPath,
       method,
@@ -56,6 +57,10 @@ function httpRequest(method, urlPath, timeoutMs = REQUEST_TIMEOUT_MS) {
     req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
     req.end();
   });
+}
+
+function isIpv4Address(host) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
 }
 
 // Upload a file buffer to the device using multipart/form-data so binary
@@ -138,18 +143,33 @@ async function poll() {
   _usbFailed   = false;  // reset when device unplugged
 
   // ── WiFi fallback ────────────────────────────────────────────────────────────
-  try {
-    const pong = await httpRequest('GET', '/ping', 3000);
-    if (pong.status !== 200 || !pong.body.ok) return;
-  } catch {
-    return;
+  const configuredIp = (queries.getSetting('deviceIp') || '').trim();
+  const probeHosts = [configuredIp, DEVICE_MDNS_HOST, DEVICE_DEFAULT_IP]
+    .filter(Boolean)
+    .filter((host, idx, arr) => arr.indexOf(host) === idx);
+
+  let deviceHost = null;
+  for (const host of probeHosts) {
+    try {
+      const pong = await httpRequest('GET', '/ping', 3000, host);
+      if (pong.status === 200 && pong.body.ok) {
+        deviceHost = host;
+        break;
+      }
+    } catch {
+      // try next host
+    }
+  }
+  if (!deviceHost) return;
+
+  console.log('[sync] Device detected at', deviceHost);
+  emit('sync:device-detected', { ip: deviceHost });
+  if (isIpv4Address(deviceHost) && configuredIp !== deviceHost) {
+    queries.setSetting('deviceIp', deviceHost);
   }
 
-  console.log('[sync] Device detected at', DEVICE_IP);
-  emit('sync:device-detected', { ip: DEVICE_IP });
-
   try {
-    const stateResp = await httpRequest('GET', '/state');
+    const stateResp = await httpRequest('GET', '/state', REQUEST_TIMEOUT_MS, deviceHost);
     if (stateResp.status !== 200) throw new Error('Failed to get state');
 
     const deviceState = stateResp.body;
@@ -194,7 +214,7 @@ async function poll() {
     if (onDevice && onDevice.pending_return) {
       console.log('[sync] Returning book...');
       emit('sync:returning', {});
-      await httpRequest('DELETE', '/book');
+      await httpRequest('DELETE', '/book', REQUEST_TIMEOUT_MS, deviceHost);
       queries.setOnDevice(onDevice.id, false);
       queries.setPendingReturn(onDevice.id, false);
 
@@ -221,7 +241,7 @@ async function poll() {
       for (let i = 0; i < files.length; i++) {
         const { publicName, diskName } = files[i];
         const content = fs.readFileSync(path.join(convertedDir, diskName));
-        await uploadFile(publicName, content, DEVICE_IP);
+        await uploadFile(publicName, content, deviceHost);
         console.log('[sync] Uploaded', publicName, `${i + 1}/${files.length}`);
         emit('sync:send-progress', { filename: publicName, progress: ((i + 1) / files.length) * 100 });
       }
@@ -232,7 +252,7 @@ async function poll() {
 
     console.log('[sync] Complete, signaling device...');
     emit('sync:complete', {});
-    await httpRequest('POST', '/sync-complete');
+    await httpRequest('POST', '/sync-complete', REQUEST_TIMEOUT_MS, deviceHost);
 
   } catch (err) {
     console.error('[sync] Error:', err.message);

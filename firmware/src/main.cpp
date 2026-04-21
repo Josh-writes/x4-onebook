@@ -259,6 +259,10 @@ void loop() {
       } else {
         PageRenderer::renderMessage(renderer, "No book on device.", "Send one from the shelf.");
       }
+    } else if (line == "X4SYNC") {
+      // Sync was attempted but timed out — restore screen
+      if (bookLoaded) renderPage();
+      else PageRenderer::renderMessage(renderer, "No book on device.", "Send one from the shelf.");
     } else if (UsbSetup::handleLine(line, config)) {
       PageRenderer::renderMessage(renderer, "Config updated.", nullptr);
       delay(1500);
@@ -300,8 +304,12 @@ void loop() {
     if (bookLoaded) renderPage();
   }
 
-  // Power button long press → sleep
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getHeldTime() > 800) {
+  // Power button long press → sleep.
+  // Must be released once after boot before long-press is armed — prevents
+  // immediately re-sleeping when waking from deep sleep via the power GPIO.
+  static bool powerBtnArmed = false;
+  if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerBtnArmed = true;
+  if (powerBtnArmed && gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getHeldTime() > 800) {
     enterSleep();
   }
 

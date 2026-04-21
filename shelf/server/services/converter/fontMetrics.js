@@ -13,6 +13,7 @@
  * whatever the firmware actually renders.
  */
 
+const fs = require('fs');
 const path = require('path');
 const opentype = require('opentype.js');
 
@@ -51,11 +52,24 @@ const ADVANCE_Y = {
 
 // ── Variant definitions ───────────────────────────────────────────────────────
 
-// Path to font source files (inside crosspoint-reader, sibling to shelf/)
-const FONT_SOURCE_DIR = path.resolve(
-  __dirname,
-  '../../../../crosspoint-reader/lib/EpdFont/builtinFonts/source'
-);
+function resolveFontSourceDir() {
+  const candidates = [
+    // Current repo layout.
+    path.resolve(__dirname, '../../../../firmware/lib/EpdFont/builtinFonts/source'),
+    // Legacy multi-repo layout (shelf next to crosspoint-reader).
+    path.resolve(__dirname, '../../../../crosspoint-reader/lib/EpdFont/builtinFonts/source'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  throw new Error(
+    `Unable to locate builtin font sources. Tried:\n${candidates.join('\n')}`
+  );
+}
+
+const FONT_SOURCE_DIR = resolveFontSourceDir();
 
 const FONT_FILES = {
   bookerly: path.join(FONT_SOURCE_DIR, 'Bookerly', 'Bookerly-Regular.ttf'),
