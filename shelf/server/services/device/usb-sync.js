@@ -73,9 +73,13 @@ function writeAndDrain(port, data) {
 
 function openPort(portPath) {
   return new Promise((resolve, reject) => {
-    const port = new SerialPort({ path: portPath, baudRate: 115200 }, err => {
+    // rtscts:false prevents Windows ERROR_SEM_TIMEOUT (121) on USB CDC ports
+    // that don't support hardware flow control.
+    const port = new SerialPort({ path: portPath, baudRate: 115200, rtscts: false }, err => {
       if (err) reject(err); else resolve(port);
     });
+    port.on('close', () => console.log('[usb-sync] Port closed unexpectedly'));
+    port.on('error', err => console.log('[usb-sync] Port error:', err.message));
   });
 }
 
@@ -93,7 +97,7 @@ async function waitForPrefix(reader, prefix, timeoutMs) {
     try {
       const line = await reader.read(Math.min(remaining, 1000));
       if (line.startsWith(prefix)) return line;
-      // log lines from device — ignore silently
+      console.log('[usb-sync] device:', line);
     } catch {
       continue; // individual read timed out — keep waiting until deadline
     }
@@ -113,15 +117,14 @@ async function findX4Port() {
     );
     if (match) return match;
 
-    // Fallback for environments where VID/manufacturer aren't exposed by the
-    // serial backend (common on some Linux/macOS setups).
+    // Fallback for Linux/macOS where VID/manufacturer aren't always exposed.
+    // Does NOT match COM ports — on Windows those include Bluetooth adapters.
     return ports.find(p => {
-      const path = (p.path || '').toLowerCase();
+      const portPath = (p.path || '').toLowerCase();
       return (
-        path.includes('ttyacm') ||
-        path.includes('ttyusb') ||
-        path.includes('usbmodem') ||
-        path.startsWith('com')
+        portPath.includes('ttyacm') ||
+        portPath.includes('ttyusb') ||
+        portPath.includes('usbmodem')
       );
     }) || null;
   } catch {
@@ -183,6 +186,7 @@ async function runSync(portPath, emit) {
 
     const onDevice = queries.getOnDeviceBook();
     const pending  = queries.getPendingSendBook();
+    console.log('[usb-sync] pending:', pending?.id, '| onDevice:', onDevice?.id, onDevice?.pending_return ? '(pending_return)' : '');
 
     if (onDevice?.pending_return) {
       emit('sync:returning', {});
@@ -247,12 +251,19 @@ async function trySync(emit) {
   const portInfo = await findX4Port();
   if (!portInfo) return false;
 
-  try {
-    return await runSync(portInfo.path, emit);
-  } catch (err) {
-    console.error('[usb-sync] Error:', err.message);
-    emit('sync:error', { error: err.message, transport: 'usb' });
-    return false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await runSync(portInfo.path, emit);
+    } catch (err) {
+      // ERROR_SEM_TIMEOUT (121) on Windows USB CDC — port not ready yet, retry
+      if (err.message?.includes('121') && attempt < 3) {
+        await new Promise(r => setTimeout(r, 800));
+        continue;
+      }
+      console.error('[usb-sync] Error:', err.message);
+      emit('sync:error', { error: err.message, transport: 'usb' });
+      return false;
+    }
   }
 }
 

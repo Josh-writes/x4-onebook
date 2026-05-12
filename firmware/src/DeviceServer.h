@@ -12,4 +12,5 @@ namespace DeviceServer {
 
   void handleLoop();
   bool isRunning();
+  bool wasSyncCompleted();  // true once after sync-complete received; auto-clears
 }

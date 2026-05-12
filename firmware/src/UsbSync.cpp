@@ -38,7 +38,7 @@ bool receiveFile(const String& filename, uint32_t fileSize) {
     return false;
   }
 
-  uint8_t buf[CHUNK_SIZE];
+  static uint8_t buf[CHUNK_SIZE];
   uint32_t remaining = fileSize;
   bool ok = true;
 
@@ -64,8 +64,6 @@ bool receiveFile(const String& filename, uint32_t fileSize) {
 }
 
 bool runSync(GfxRenderer& renderer) {
-  // Send X4READY immediately — before any blocking display operations so
-  // the shelf receives the handshake before its timeout fires.
   BookState state = StateManager::load();
   JsonDocument doc;
   if (state.bookId.length() > 0) {
@@ -79,11 +77,15 @@ bool runSync(GfxRenderer& renderer) {
   String stateJson;
   serializeJson(doc, stateJson);
 
+  // Render the screen BEFORE sending X4READY so the shelf doesn't start
+  // sending file data while the e-ink display is blocking the loop.
+  // The shelf retries X4SYNC every ~1.2s for 20s, so a few seconds here
+  // is fine. Flush any X4SYNC lines that arrived during the render.
+  PageRenderer::renderMessage(renderer, "USB sync...", "Do not disconnect.");
+  while (Serial.available()) Serial.read();
+
   Serial.print("X4READY:");
   Serial.println(stateJson);
-
-  // Now do the slow e-ink render
-  PageRenderer::renderMessage(renderer, "USB sync...", "Do not disconnect.");
 
   // Set generous timeout for file data
   Serial.setTimeout(60000);

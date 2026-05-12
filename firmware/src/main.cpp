@@ -71,12 +71,14 @@ void renderPage() {
 void enterSleep() {
   LOG_INF("MAIN", "Sleeping — syncing progress");
 
-  DeviceServer::begin([]() {
-  });
+  DeviceServer::begin([]() {});
 
-  for (int i = 0; i < 40; i++) {
+  // Run server up to 30 s; exit early once shelf confirms sync-complete.
+  const unsigned long sleepStart = millis();
+  while (millis() - sleepStart < 30000) {
     DeviceServer::handleLoop();
-    delay(250);
+    if (DeviceServer::wasSyncCompleted()) break;
+    delay(50);
   }
 
   DeviceServer::end();
@@ -92,16 +94,16 @@ void doSwap() {
 
   PageRenderer::renderSyncScreen(renderer, "Connecting to shelf...");
 
-  DeviceServer::begin([]() {
-  });
+  DeviceServer::begin([]() {});
 
   PageRenderer::renderSyncScreen(renderer, "Waiting for shelf...");
 
+  // Up to 120 s for large books; exit early when shelf confirms sync-complete.
   const unsigned long start = millis();
-  while (millis() - start < 30000) {
+  while (millis() - start < 120000) {
     DeviceServer::handleLoop();
+    if (DeviceServer::wasSyncCompleted()) break;
     delay(50);
-    if (!DeviceServer::isRunning()) break;
   }
 
   DeviceServer::end();
@@ -128,16 +130,15 @@ void doReturn() {
 
   PageRenderer::renderSyncScreen(renderer, "Connecting to shelf...");
 
-  DeviceServer::begin([]() {
-  });
+  DeviceServer::begin([]() {});
 
   PageRenderer::renderSyncScreen(renderer, "Waiting for shelf...");
 
   const unsigned long start = millis();
-  while (millis() - start < 30000) {
+  while (millis() - start < 60000) {
     DeviceServer::handleLoop();
+    if (DeviceServer::wasSyncCompleted()) break;
     delay(50);
-    if (!DeviceServer::isRunning()) break;
   }
 
   DeviceServer::end();
@@ -216,6 +217,8 @@ void setup() {
     PageRenderer::renderMessage(renderer, "SD card error.", "Check card and restart.");
     return;
   }
+
+  HalSystem::checkPanic();  // write crash_report.txt if last boot was a panic
 
   config.load();
   display.begin();

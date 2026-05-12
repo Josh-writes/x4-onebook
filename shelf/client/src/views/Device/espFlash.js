@@ -1,12 +1,16 @@
 /**
  * Browser-side OTA flash for the X4.
  *
- * Uses esptool-js (Web Serial API) to write only firmware.bin to the
- * backup OTA partition, then update otadata so the device boots into it.
- * This is ~2 min vs ~25 min for a full 4-image flash, and requires no
- * Python or PlatformIO installation.
+ * Mirrors the MicroSlate flasher logic exactly (which is proven to work with
+ * CrossPoint and the standard ESP-IDF OTA bootloader).
  *
- * Partition layout (matches firmware/partitions.csv):
+ * Key detail: ESP-IDF's esp_rom_crc32_le(UINT32_MAX, buf, len) un-XORs the
+ * init value before processing, so the effective starting CRC is 0, then the
+ * result is XOR'd with 0xFFFFFFFF at the end. The old code started at
+ * 0xFFFFFFFF and XOR'd again — double-XOR — producing wrong CRCs that the
+ * bootloader rejected, causing it to fall back to CrossPoint.
+ *
+ * Partition layout (matches firmware/partitions.csv and CrossPoint):
  *   otadata  0x00e000  0x2000
  *   app0     0x010000  0x640000
  *   app1     0x650000  0x640000
@@ -14,7 +18,8 @@
 
 import { ESPLoader, Transport } from 'esptool-js';
 
-// ── CRC32 (IEEE 802.3) ────────────────────────────────────────────────────────
+// ── CRC32 (matches esp_rom_crc32_le(UINT32_MAX, buf, len)) ───────────────────
+// Start at 0 (not 0xFFFFFFFF) because the ROM function un-XORs its init arg.
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -26,10 +31,11 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-function crc32(bytes) {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++) {
-    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+function crc32OfU32Le(value) {
+  const b = u32Le(value);
+  let crc = 0; // start at 0, not 0xFFFFFFFF
+  for (let i = 0; i < 4; i++) {
+    crc = CRC_TABLE[(crc ^ b[i]) & 0xFF] ^ (crc >>> 8);
   }
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
@@ -38,7 +44,7 @@ function crc32(bytes) {
 
 function u32Le(value) {
   const b = new Uint8Array(4);
-  new DataView(b.buffer).setUint32(0, value >>> 0, /* little-endian */ true);
+  new DataView(b.buffer).setUint32(0, value >>> 0, true);
   return b;
 }
 
@@ -46,93 +52,129 @@ function readU32Le(bytes, offset) {
   return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, true);
 }
 
-/** Convert a binary string (char = one byte) to Uint8Array. */
-function binStrToU8(s) {
-  const a = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0xFF;
-  return a;
-}
-
-/** Convert Uint8Array to binary string for esptool-js write_flash. */
 function u8ToBinStr(a) {
   let s = '';
   for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
   return s;
 }
 
+function binStrToU8(s) {
+  const a = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0xFF;
+  return a;
+}
+
 // ── OTA layout constants ──────────────────────────────────────────────────────
 
-const OTADATA_ADDR        = 0x00e000;
-const OTADATA_SIZE        = 0x2000;
-const APP0_ADDR           = 0x010000;
-const APP1_ADDR           = 0x650000;
-const APP0_RECORD_OFFSET  = 0x0000;   // first  1 KB of otadata
-const APP1_RECORD_OFFSET  = 0x1000;   // second 1 KB of otadata
+const OTADATA_ADDR = 0x00e000;
+const OTADATA_SIZE = 0x2000;
+const APP0_ADDR    = 0x010000;
+const APP1_ADDR    = 0x650000;
 
-// OTA record layout (32 bytes used per 1 KB slot):
-//   [0..3]   sequence (u32 LE)
-//   [4..23]  padding (0xFF)
-//   [24..27] state    (u32 LE)
-//   [28..31] crc32 of sequence bytes (u32 LE)
+// OTA state values (from ESP-IDF esp_ota_img_states_t)
+const OTA_STATE_NEW       = 0x00000000;
+const OTA_STATE_UNDEFINED = 0xFFFFFFFF;
 
-const OTA_STATE_NEW = 0x00000000;
+// Expected partition table — must match firmware/partitions.csv and CrossPoint
+const EXPECTED_PARTITIONS = [
+  { type: 0x01, subtype: 0x02, offset: 0x009000, size: 0x005000 }, // nvs
+  { type: 0x01, subtype: 0x00, offset: 0x00e000, size: 0x002000 }, // otadata
+  { type: 0x00, subtype: 0x10, offset: 0x010000, size: 0x640000 }, // app0 (ota_0)
+  { type: 0x00, subtype: 0x11, offset: 0x650000, size: 0x640000 }, // app1 (ota_1)
+  { type: 0x01, subtype: 0x82, offset: 0xc90000, size: 0x360000 }, // spiffs
+  { type: 0x01, subtype: 0x03, offset: 0xff0000, size: 0x010000 }, // coredump
+];
+
+// ── Partition table validation ────────────────────────────────────────────────
+
+function parsePartitionTable(data) {
+  const partitions = [];
+  for (let offset = 0; offset < data.length; offset += 32) {
+    const chunk = data.slice(offset, offset + 32);
+    if (chunk.length < 32) break;
+    // All-0xFF = end of table
+    if (chunk.every(b => b === 0xFF)) break;
+    // 0xEB 0xEB = MD5 checksum entry, skip
+    if (chunk[0] === 0xEB && chunk[1] === 0xEB) continue;
+
+    partitions.push({
+      type:    chunk[2],
+      subtype: chunk[3],
+      offset:  readU32Le(chunk, 4),
+      size:    readU32Le(chunk, 8),
+    });
+  }
+  return partitions;
+}
+
+function validatePartitionTable(partitions) {
+  if (partitions.length !== EXPECTED_PARTITIONS.length) return false;
+  return EXPECTED_PARTITIONS.every((exp, i) => {
+    const got = partitions[i];
+    return got &&
+      got.type    === exp.type    &&
+      got.subtype === exp.subtype &&
+      got.offset  === exp.offset  &&
+      got.size    === exp.size;
+  });
+}
 
 // ── OTA record helpers ────────────────────────────────────────────────────────
 
-function parseRecord(otaData, offset) {
-  const sequence = readU32Le(otaData, offset);
-  const state    = readU32Le(otaData, offset + 24);
-  const crc      = readU32Le(otaData, offset + 28);
-  const expectedCrc = crc32(u32Le(sequence));
-  const valid = (crc === expectedCrc) && (state !== 0xFFFFFFFF);
-  return { sequence, state, valid };
+function parseOtaRecord(otaData, slotOffset) {
+  const sequence = readU32Le(otaData, slotOffset);
+  const state    = readU32Le(otaData, slotOffset + 24);
+  const storedCrc = readU32Le(otaData, slotOffset + 28);
+  const expectedCrc = crc32OfU32Le(sequence);
+  const crcValid = storedCrc === expectedCrc;
+  const stateValid = state !== OTA_STATE_UNDEFINED && state !== 0x3 && state !== 0x4; // not INVALID/ABORTED
+  return { sequence, state, crcValid, valid: crcValid && stateValid && sequence !== 0xFFFFFFFF };
 }
 
-function buildRecord(sequence) {
-  // 1 KB slot filled with 0xFF, first 32 bytes are the record
+function buildOtaRecord(sequence) {
   const slot = new Uint8Array(0x1000).fill(0xFF);
-  const seq  = u32Le(sequence);
-  slot.set(seq, 0);
+  slot.set(u32Le(sequence), 0);
   slot.set(u32Le(OTA_STATE_NEW), 24);
-  slot.set(u32Le(crc32(seq)), 28);
+  slot.set(u32Le(crc32OfU32Le(sequence)), 28);
   return slot;
 }
 
 /**
- * Given the current otadata buffer (0x2000 bytes), determine which app
- * partition to target (the one NOT currently booting) and build new otadata.
+ * Determine which partition to flash to (the inactive one) and what sequence
+ * number to assign. Mirrors MicroSlate's OtaPartition logic exactly.
+ *
+ * When neither slot is valid (factory device), write to app1 to leave any
+ * existing firmware in app0 intact as a fallback.
  */
 function planOta(otaData) {
-  const r0 = parseRecord(otaData, APP0_RECORD_OFFSET);
-  const r1 = parseRecord(otaData, APP1_RECORD_OFFSET);
+  const r0 = parseOtaRecord(otaData, 0x0000); // app0 slot
+  const r1 = parseOtaRecord(otaData, 0x1000); // app1 slot
 
-  let targetPartition, targetAddr, targetOffset, newSequence;
+  let currentPartition, backupPartition, backupAddr, backupSlotOffset, newSequence;
 
   if (!r0.valid && !r1.valid) {
-    // Device has never done OTA — write to app0 (default first boot slot)
-    targetPartition = 'app0';
-    targetAddr      = APP0_ADDR;
-    targetOffset    = APP0_RECORD_OFFSET;
-    newSequence     = 1;
-  } else if (r0.valid && (!r1.valid || r0.sequence >= r1.sequence)) {
-    // app0 is active → write to app1
-    targetPartition = 'app1';
-    targetAddr      = APP1_ADDR;
-    targetOffset    = APP1_RECORD_OFFSET;
-    newSequence     = r0.sequence + 1;
+    // Neither slot valid — treat app0 as "current" so we write to app1 (backup).
+    // This preserves any factory firmware in app0 as a fallback.
+    currentPartition = 'app0';
+    backupPartition  = 'app1';
+    backupAddr       = APP1_ADDR;
+    backupSlotOffset = 0x1000;
+    newSequence      = 1;
   } else {
-    // app1 is active → write to app0
-    targetPartition = 'app0';
-    targetAddr      = APP0_ADDR;
-    targetOffset    = APP0_RECORD_OFFSET;
-    newSequence     = r1.sequence + 1;
+    // Current boot = slot with highest valid sequence
+    const current = (r0.valid && (!r1.valid || r0.sequence >= r1.sequence)) ? 'app0' : 'app1';
+    const currentSeq = current === 'app0' ? r0.sequence : r1.sequence;
+    backupPartition  = current === 'app0' ? 'app1' : 'app0';
+    backupAddr       = backupPartition === 'app0' ? APP0_ADDR : APP1_ADDR;
+    backupSlotOffset = backupPartition === 'app0' ? 0x0000 : 0x1000;
+    currentPartition = current;
+    newSequence      = currentSeq + 1;
   }
 
-  // Clone otadata and write the new record into the target slot
   const newOtaData = new Uint8Array(otaData);
-  newOtaData.set(buildRecord(newSequence), targetOffset);
+  newOtaData.set(buildOtaRecord(newSequence), backupSlotOffset);
 
-  return { targetPartition, targetAddr, newOtaData };
+  return { currentPartition, backupPartition, backupAddr, newOtaData };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -142,18 +184,15 @@ export function isWebSerialSupported() {
 }
 
 /**
- * Flash the X4 via Web Serial (OTA only — writes firmware.bin to backup slot).
+ * Flash the X4 via Web Serial (OTA — writes firmware.bin to backup slot,
+ * updates otadata to boot into it on next reset).
  *
  * @param {string}   firmwareUrl  URL to fetch firmware.bin from
- * @param {Function} onEvent      (event: { type, message, percent }) => void
- *
- * The browser will show its own "select a port" dialog (Web Serial requirement).
- * Throws on hard failure; progress/errors also delivered via onEvent.
+ * @param {Function} onEvent      ({ type, message, percent }) => void
  */
 export async function flashOta(firmwareUrl, onEvent) {
   const emit = (type, message, percent = undefined) => onEvent({ type, message, percent });
 
-  // Step 1 — request port (browser dialog; no filter so all COM ports appear)
   let port;
   try {
     port = await navigator.serial.requestPort();
@@ -162,7 +201,7 @@ export async function flashOta(firmwareUrl, onEvent) {
   }
 
   const transport = new Transport(port, true);
-  const loader    = new ESPLoader({
+  const loader = new ESPLoader({
     transport,
     baudrate:    921600,
     romBaudrate: 115200,
@@ -170,42 +209,54 @@ export async function flashOta(firmwareUrl, onEvent) {
   });
 
   try {
-    // Step 2 — connect to ROM bootloader
     emit('info', 'Connecting to device…', 2);
     const chipDesc = await loader.main();
     emit('info', `Connected: ${chipDesc}`, 5);
 
-    // Step 3 — fetch firmware.bin from shelf server
-    emit('info', 'Downloading firmware from shelf…', 8);
+    // Validate partition table — ensures this device has the right layout
+    emit('info', 'Validating partition table…', 8);
+    const rawPt = await loader.readFlash(0x8000, 0x2000);
+    const ptBytes = typeof rawPt === 'string' ? binStrToU8(rawPt) : new Uint8Array(rawPt);
+    const partitions = parsePartitionTable(ptBytes);
+    if (!validatePartitionTable(partitions)) {
+      throw new Error(
+        `Partition table does not match expected layout.\n` +
+        `Found ${partitions.length} partition(s): ${JSON.stringify(partitions)}\n\n` +
+        `This device may need a full flash first. Use PlatformIO: cd firmware && pio run -t upload`
+      );
+    }
+    emit('info', 'Partition table OK', 12);
+
+    // Fetch firmware binary from shelf server
+    emit('info', 'Downloading firmware…', 14);
     const fwResp = await fetch(firmwareUrl);
     if (!fwResp.ok) throw new Error(`Failed to fetch firmware: HTTP ${fwResp.status}`);
     const fwBytes = new Uint8Array(await fwResp.arrayBuffer());
-    emit('info', `Firmware: ${(fwBytes.length / 1024).toFixed(0)} KB`, 12);
+    emit('info', `Firmware: ${(fwBytes.length / 1024).toFixed(0)} KB`, 18);
 
-    // Step 4 — read current otadata to determine backup slot
-    emit('info', 'Reading OTA metadata…', 15);
-    const rawOta  = await loader.readFlash(OTADATA_ADDR, OTADATA_SIZE);
-    // read_flash may return a string or Uint8Array depending on esptool-js version
-    const otaData = (typeof rawOta === 'string') ? binStrToU8(rawOta) : new Uint8Array(rawOta);
+    // Read otadata to find the inactive (backup) partition
+    emit('info', 'Reading OTA metadata…', 20);
+    const rawOta = await loader.readFlash(OTADATA_ADDR, OTADATA_SIZE);
+    const otaData = typeof rawOta === 'string' ? binStrToU8(rawOta) : new Uint8Array(rawOta);
 
-    const { targetPartition, targetAddr, newOtaData } = planOta(otaData);
-    emit('info', `Writing to ${targetPartition} @ 0x${targetAddr.toString(16)}…`, 18);
+    const { currentPartition, backupPartition, backupAddr, newOtaData } = planOta(otaData);
+    emit('info', `Boot: ${currentPartition} → writing to ${backupPartition} @ 0x${backupAddr.toString(16)}`, 22);
 
-    // Step 5 — write firmware.bin to backup partition
+    // Write firmware to the backup partition
     await loader.writeFlash({
-      fileArray: [{ data: u8ToBinStr(fwBytes), address: targetAddr }],
+      fileArray: [{ data: u8ToBinStr(fwBytes), address: backupAddr }],
       flashSize: 'keep',
       flashMode: 'keep',
       flashFreq: 'keep',
       eraseAll:  false,
       compress:  true,
       reportProgress(_idx, written, total) {
-        const pct = 18 + Math.round((written / total) * 62);
+        const pct = 22 + Math.round((written / total) * 58);
         emit('progress', `Writing firmware… ${Math.round((written / total) * 100)}%`, pct);
       },
     });
 
-    // Step 6 — update otadata to boot into the new partition
+    // Update otadata to boot into the newly written partition
     emit('info', 'Updating OTA boot record…', 82);
     await loader.writeFlash({
       fileArray: [{ data: u8ToBinStr(newOtaData), address: OTADATA_ADDR }],
@@ -217,14 +268,12 @@ export async function flashOta(firmwareUrl, onEvent) {
       reportProgress() {},
     });
 
-    // Step 7 — reset device into new firmware
-    emit('info', 'Resetting device…', 95);
+    emit('info', 'Resetting device…', 96);
     await loader.after('hard_reset');
 
     emit('success', 'Firmware installed. Device is rebooting.', 100);
 
   } finally {
     try { await transport.disconnect(); } catch { /* ignore */ }
-    // Don't close port here — browser manages its lifetime
   }
 }

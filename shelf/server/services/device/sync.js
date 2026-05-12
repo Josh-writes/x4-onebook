@@ -121,10 +121,15 @@ async function poll() {
     if (isNew) {
       _lastUsbPort = usbPort.path;
       _usbFailed   = false;  // fresh connection — allow retry
+      console.log('[sync] USB device found:', usbPort.path);
     }
 
     const hasPending = !!queries.getPendingSendBook() ||
                        !!queries.getOnDeviceBook()?.pending_return;
+
+    if (!hasPending) { console.log('[sync] USB: no pending work'); return; }
+    if (_usbFailed)  { console.log('[sync] USB: skipping — previous attempt failed'); return; }
+    if (_usbBusy)    return;
 
     if (hasPending && !_usbBusy && !_usbFailed) {
       _usbBusy = true;
@@ -144,7 +149,7 @@ async function poll() {
 
   // ── WiFi fallback ────────────────────────────────────────────────────────────
   const configuredIp = (queries.getSetting('deviceIp') || '').trim();
-  const probeHosts = [configuredIp, DEVICE_MDNS_HOST, DEVICE_DEFAULT_IP]
+  const probeHosts = [configuredIp, DEVICE_DEFAULT_IP, DEVICE_MDNS_HOST]
     .filter(Boolean)
     .filter((host, idx, arr) => arr.indexOf(host) === idx);
 

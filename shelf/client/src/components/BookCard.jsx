@@ -122,9 +122,14 @@ export default function BookCard({ book, onSend, onReturn, onDelete }) {
       )}
 
       {working && (
-        <div className="absolute inset-0 bg-shelf-bg/80 flex flex-col items-center justify-center gap-2">
+        <div className="absolute inset-0 bg-shelf-bg/80 flex flex-col items-center justify-center gap-2 p-3 text-center">
           <Spinner />
           {workLabel && <p className="text-xs text-shelf-muted">{workLabel}</p>}
+          {(workLabel === 'Waiting for device…' || workLabel === 'Queued…') && (
+            <p className="text-xs text-shelf-muted/70 leading-snug">
+              On the device, press sleep or select Swap Book from settings.
+            </p>
+          )}
         </div>
       )}
 

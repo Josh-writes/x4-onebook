@@ -38,7 +38,11 @@
       "Bash(xargs -I{} taskkill //F //PID {})",
       "Bash(netsh wlan *)",
       "Bash(pio run *)",
-      "Bash(taskkill *)"
+      "Bash(taskkill *)",
+      "Bash(git -C \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook\" log --oneline -5)",
+      "Bash(git -C \"C:/Users/Josh/OneDrive/Documents/Code_Projects/x4-onebook\" status)",
+      "Bash(pip install *)",
+      "Bash(python -m pip install intelhex)"
     ]
   }
 }

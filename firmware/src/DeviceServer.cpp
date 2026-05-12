@@ -1,6 +1,7 @@
 #include "DeviceServer.h"
 #include <algorithm>
 #include <ArduinoJson.h>
+#include <ESPmDNS.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <WebServer.h>
@@ -31,6 +32,7 @@ namespace {
 
 WebServer* server = nullptr;
 std::function<void()> onSyncCompleteCb = nullptr;
+static bool _syncCompleted = false;
 
 bool startAP() {
   WiFi.mode(WIFI_AP);
@@ -39,6 +41,11 @@ bool startAP() {
     return false;
   }
   LOG_INF("SRV", "AP started — SSID: %s  IP: %s", AP_SSID, WiFi.softAPIP().toString().c_str());
+  // mDNS works in AP mode too — clients on the AP can reach x4book.local
+  if (MDNS.begin("x4book")) {
+    MDNS.addService("http", "tcp", 80);
+    LOG_INF("SRV", "mDNS started: x4book.local");
+  }
   return true;
 }
 
@@ -69,6 +76,10 @@ bool connectToConfiguredWifi() {
       if (WiFi.status() == WL_CONNECTED) {
         LOG_INF("SRV", "WiFi connected — SSID: %s  IP: %s",
                 net.ssid.c_str(), WiFi.localIP().toString().c_str());
+        if (MDNS.begin("x4book")) {
+          MDNS.addService("http", "tcp", 80);
+          LOG_INF("SRV", "mDNS started: x4book.local");
+        }
         return true;
       }
       delay(200);
@@ -186,7 +197,8 @@ void handleSyncComplete() {
   serializeJson(doc, out);
   server->send(200, "application/json", out);
 
-  LOG_INF("SRV", "Sync complete — stopping server");
+  LOG_INF("SRV", "Sync complete");
+  _syncCompleted = true;
 
   if (onSyncCompleteCb) {
     onSyncCompleteCb();
@@ -207,6 +219,7 @@ namespace DeviceServer {
 
 void begin(SyncCompleteCallback onSyncComplete) {
   onSyncCompleteCb = onSyncComplete;
+  _syncCompleted   = false;
 
   const bool staOk = connectToConfiguredWifi();
   if (!staOk && !startAP()) return;
@@ -244,6 +257,12 @@ void handleLoop() {
 
 bool isRunning() {
   return server != nullptr;
+}
+
+bool wasSyncCompleted() {
+  if (!_syncCompleted) return false;
+  _syncCompleted = false;
+  return true;
 }
 
 }  // namespace DeviceServer

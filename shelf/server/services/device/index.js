@@ -289,36 +289,45 @@ async function convertCoverToBmp(coverPath, destDir) {
           }
         }
 
-        // Write 1-bit BMP header + data
-        const rowSize = Math.ceil(width / 8);
+        // Write 1-bit BMP: header (14) + DIB (40) + color table (8) + pixels
+        // Rows must be padded to a 4-byte boundary.
+        const unpadded = Math.ceil(width / 8);
+        const rowSize  = Math.ceil(unpadded / 4) * 4;  // pad to 4 bytes
         const pixelDataSize = rowSize * height;
-        const fileSize = 54 + pixelDataSize;  // BMP header (14) + DIB (40) + pixels
+        const pixelDataOffset = 14 + 40 + 8;  // after header + DIB + color table
+        const fileSize = pixelDataOffset + pixelDataSize;
 
-        // BMP uses bottom-up row order
-        const bmp = Buffer.alloc(fileSize);
+        const bmp = Buffer.alloc(fileSize, 0);
         let offset = 0;
 
         // BMP File Header (14 bytes)
         bmp.write('BM', offset); offset += 2;
         bmp.writeUInt32LE(fileSize, offset); offset += 4;
-        bmp.writeUInt32LE(0, offset); offset += 4;  // Reserved
-        bmp.writeUInt32LE(54, offset); offset += 4;  // Pixel data offset
+        bmp.writeUInt32LE(0, offset); offset += 4;           // reserved
+        bmp.writeUInt32LE(pixelDataOffset, offset); offset += 4;
 
-        // DIB Header (40 bytes) - BITMAPINFOHEADER
-        bmp.writeUInt32LE(40, offset); offset += 4;  // DIB size
+        // DIB Header — BITMAPINFOHEADER (40 bytes)
+        bmp.writeUInt32LE(40, offset); offset += 4;
         bmp.writeInt32LE(width, offset); offset += 4;
-        bmp.writeInt32LE(-height, offset); offset += 4;  // Negative = top-down
-        bmp.writeUInt16LE(1, offset); offset += 2;  // Planes
-        bmp.writeUInt16LE(1, offset); offset += 2;  // Bits per pixel (1-bit)
-        bmp.writeUInt32LE(0, offset); offset += 4;  // Compression (none)
+        bmp.writeInt32LE(-height, offset); offset += 4;      // negative = top-down
+        bmp.writeUInt16LE(1, offset); offset += 2;           // planes
+        bmp.writeUInt16LE(1, offset); offset += 2;           // bits per pixel
+        bmp.writeUInt32LE(0, offset); offset += 4;           // no compression
         bmp.writeUInt32LE(pixelDataSize, offset); offset += 4;
-        bmp.writeInt32LE(2835, offset); offset += 4;  // X pixels per meter
-        bmp.writeInt32LE(2835, offset); offset += 4;  // Y pixels per meter
-        bmp.writeUInt32LE(0, offset); offset += 4;  // Colors used
-        bmp.writeUInt32LE(0, offset); offset += 4;  // Important colors
+        bmp.writeInt32LE(2835, offset); offset += 4;         // ~72 DPI
+        bmp.writeInt32LE(2835, offset); offset += 4;
+        bmp.writeUInt32LE(2, offset); offset += 4;           // 2 colors in table
+        bmp.writeUInt32LE(0, offset); offset += 4;
 
-        // Copy pixel data (already in correct format)
-        output.copy(bmp, offset);
+        // Color table (8 bytes): black (index 0), white (index 1)
+        bmp.writeUInt32LE(0x00000000, offset); offset += 4;  // black
+        bmp.writeUInt32LE(0x00FFFFFF, offset); offset += 4;  // white
+
+        // Pixel data — copy each row, padding to rowSize
+        for (let y = 0; y < height; y++) {
+          output.copy(bmp, offset, y * unpadded, y * unpadded + unpadded);
+          offset += rowSize;
+        }
 
         fs.writeFileSync(destBmpPath, bmp);
       });

@@ -80,7 +80,7 @@ const FONT_FILES = {
 const VARIANTS = [
   { font: 'bookerly', sizes: [12, 14, 16, 18] },
   { font: 'notosans', sizes: [12, 14, 16, 18] },
-  { font: 'dyslexic', sizes: [10, 12, 14, 16] },
+  { font: 'dyslexic', sizes: [10, 12, 14] },
 ];
 
 // ── opentype.js font cache ────────────────────────────────────────────────────
